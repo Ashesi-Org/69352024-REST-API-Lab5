@@ -1,18 +1,162 @@
+import firebase_admin
+from firebase_admin import credentials, firestore
+
+import functions_framework
+
 import json
 from flask import Flask, request, jsonify
 
-from firestoredb_service import read_to_create, write_to_file, data_to_json, delete_record, delete_documents, id_checker
 
-from constants import *
+# -------- Constant ---------------------
+VOTERS_FILE = 'voters'
+ELECTIONS_FILE = 'elections'
+RESULTS_FILE = 'results'
+
+STUDENT_ID = 'student_id'
+ELECTION_ID = 'election_id'
 
 
+# initialize firebase
+firebase_admin.initialize_app()
+db = firestore.client()
+
+# initialize Flask
 app = Flask(__name__)
+
+
+
+
+@functions_framework.http
+def api_entry(request):
+
+    '''
+    Function deployed to Google Cloud Function
+    
+    '''
+
+
+    # GET requests
+    if request.method == 'GET' and request.path == '/voters':
+        return retrieve_voters()
+    if request.method == 'GET' and '/voters' in request.path:
+        id = request.path.split('/')[-1]
+        return retrieve_voter(id)
+    if request.method == 'GET' and request.path == '/elections':
+        return retrieve_elections()
+    if request.method == 'GET' and '/elections' in request.path:
+        id = request.path.split('/')[-1]
+        return retrieve_election(id)
+    
+    # DELETE requests
+    if request.method == 'DELETE' and request.path == '/voters':
+        delete_voters()
+    if request.method == 'DELETE' and '/voters' in request.path:
+        id = request.path.split('/')[-1]
+        return delete_voter(id)
+    if request.method == 'DELETE' and request.path == '/elections':
+        return delete_elections()
+    if request.method == 'DELETE' and 'elections' in request.path:
+        id = request.path.split('/')[-1]
+        return delete_election(id)
+    
+    # POST requests
+
+    if request.method == 'POST' and request.path == '/elections':
+        return create_election()
+    if request.method == 'POST' and request.path == '/voters':
+        return create_voter()
+    if request.method in ['PATCH', 'PUT'] and request.path == '/voters':
+        return update_voter()
+    if request.method == 'POST' and request.path == '/elections/vote':
+        return voting()
+    return jsonify({"ERROR" : "Voter Not Found"})
+
+
+
+ 
+# ---------- DB helper functions ----------   
+  
+def id_checker(filename, id, id_name):
+    '''
+    check if a voter/election already exists
+
+    filename: the collection that contains the data
+    id: the ide to be checked
+    id_name: the field name of the id
+    '''
+    docs_data = [doc.to_dict() for doc in db.collection(filename).stream()]
+    if len(docs_data) != 0:
+        for doc in docs_data:
+            if doc[id_name] == id:
+                return True
+    return False
+
+
+def read_to_create(filename, data):
+    '''
+    read data and add new data if empty
+
+    filename: name of collection to be checked
+    data: the new data to be added if document is empty
+    '''
+    wasEmpty = False
+    doc_data = [doc.to_dict() for doc in db.collection(filename).stream()]
+    if len(doc_data) == 0:
+        wasEmpty = True
+        return ([data], wasEmpty)
+    else:
+        return (doc_data, wasEmpty)
+
+def write_to_file(filename, data):
+    '''
+    write the give data to a firebase document
+
+    filename: name of the collection to write to
+    data: the information to be written to document
+    '''
+    if filename == ELECTIONS_FILE:
+        db.collection(filename).document(data[ELECTION_ID]).set(data)
+    if filename == RESULTS_FILE:
+        db.collection(filename).document(data[ELECTION_ID]).set(data)
+    if filename == VOTERS_FILE:
+        db.collection(filename).document(data[STUDENT_ID]).set(data)
+
+
+def data_to_json(filename):
+    '''
+    converting data in a collection to json format
+
+    filename: collection to be converted
+    '''
+    data_from_db = [data.to_dict() for data in db.collection(filename).stream()]
+    return data_from_db
+
+def delete_record(filename, id):
+    '''
+    remove a document with the given id from collection, filename
+
+    filename: name of the collection
+    id: the id of the document to be removed
+    '''
+
+    deleted_record = db.collection(filename).document(id).get().to_dict()
+    db.collection(filename).document(id).delete()
+    return deleted_record
+
+def delete_documents(filename):
+    '''
+    deleting the whole collection
+    
+    filename: the collection to remove
+    '''
+    documents = db.collection(filename).list_documents()
+    for document in documents:
+        document.delete()
 
 
 # -------------------- VOTER ROUTES ------------------
 
 # registering a voter
-@app.route('/voters', methods=['POST'])
 def create_voter():
     
     new_voter = json.loads(request.data)
@@ -29,7 +173,6 @@ def create_voter():
     return jsonify(new_voter)
 
 # retrieving registered voters
-@app.route('/voters', methods=['GET'])
 def retrieve_voters():
 
     try:
@@ -39,7 +182,6 @@ def retrieve_voters():
         return jsonify({'ERROR': 'No Data Found'}), 404
 
 # retrieeving a registered voter  
-@app.route('/voters/<id>', methods=['GET'])
 def retrieve_voter(id):
 
     voters_records = data_to_json(VOTERS_FILE)
@@ -49,13 +191,11 @@ def retrieve_voter(id):
     return jsonify({'ERROR': 'No Data Found'}), 404
         
 # de-registering all registered voters
-@app.route('/voters', methods=['DELETE'])
 def delete_voters():
 
     return jsonify({'ERROR': 'Permission Denied'}), 403
     
 # de-registering a registered voters
-@app.route('/voters/<student_id>', methods=['DELETE'])
 def delete_voter(student_id):
 
     if student_id == None: return jsonify({'ERROR': 'Permission Denied'}), 403
@@ -66,8 +206,7 @@ def delete_voter(student_id):
     return jsonify(deleted_voter), 202
 
 # updating a registered voter
-@app.route('/voters', methods=['PUT', 'PATCH'])
-def update_voters():
+def update_voter():
 
     voter = json.loads(request.data)
     updated_voter = None
@@ -92,7 +231,6 @@ def update_voters():
     
 # ------------------------ ELECTION ROUTE -------------------
 # creating an election
-@app.route('/elections', methods=['POST'])
 def create_election():
 
     new_election = json.loads(request.data)
@@ -136,7 +274,6 @@ def create_election():
 
 
 # retrieving an election data / all elections
-@app.route('/elections', methods=['GET'])
 def retrieve_elections():
 
     response_data = []
@@ -161,8 +298,7 @@ def retrieve_elections():
         return jsonify({'ERROR': 'No Data Found'}), 404
     return jsonify(response_data)
 
-#retrieve single election     
-@app.route('/elections/<election_id>', methods=['GET'])
+#retrieve single election  
 def retrieve_election(election_id):
     
     results = data_to_json(RESULTS_FILE)
@@ -184,7 +320,6 @@ def retrieve_election(election_id):
     return jsonify({'ERROR': 'No Data Found'}), 404
 
 # deleting all elections
-@app.route('/elections', methods=['DELETE'])
 def delete_elections():
     try:
         delete_documents(ELECTIONS_FILE)
@@ -194,7 +329,6 @@ def delete_elections():
         return jsonify({'ERROR': 'Permission Denied'}), 403
 
 # delete a single election
-@app.route('/elections/<election_id>', methods=['DELETE'])
 def delete_election(election_id):
 
     if election_id == None: return jsonify({'ERROR': 'Permission Denied'}), 403
@@ -207,7 +341,6 @@ def delete_election(election_id):
 
 
 # voting in an election
-@app.route('/elections/vote', methods=['POST'])
 def voting():
 
     voting_details = json.loads(request.data)
@@ -276,4 +409,6 @@ def voting():
     write_to_file(RESULTS_FILE, updated_result)
     return jsonify(response_details), 200
 
-app.run(debug=True)
+
+if __name__ == '__main__':
+    app.run()
